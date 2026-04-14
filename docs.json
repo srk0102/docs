@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "SCP",
+  "name": "SCP and Plexa",
   "colors": {
     "primary": "#4F46E5",
     "light": "#818CF8",
@@ -15,13 +15,52 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Documentation",
+        "tab": "SCP",
         "groups": [
           {
-            "group": "Get Started",
+            "group": "Get started",
             "pages": [
               "introduction",
               "getting-started"
+            ]
+          },
+          {
+            "group": "scp-protocol",
+            "pages": [
+              "scp/introduction",
+              "scp/how-it-works",
+              "scp/adapter-guide",
+              "scp/pattern-store",
+              "scp/bridges",
+              "scp/api"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Plexa",
+        "groups": [
+          {
+            "group": "@srk0102/plexa",
+            "pages": [
+              "plexa/introduction",
+              "plexa/how-it-works",
+              "plexa/body-guide",
+              "plexa/memory",
+              "plexa/safety",
+              "plexa/api"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Walkthroughs",
+            "pages": [
+              "examples/cart-pole",
+              "examples/two-bodies"
             ]
           }
         ]
@@ -30,8 +69,23 @@
     "global": {
       "anchors": [
         {
-          "anchor": "GitHub",
+          "anchor": "scp-protocol on npm",
+          "href": "https://npmjs.com/package/scp-protocol",
+          "icon": "npm"
+        },
+        {
+          "anchor": "plexa on npm",
+          "href": "https://npmjs.com/package/@srk0102/plexa",
+          "icon": "npm"
+        },
+        {
+          "anchor": "GitHub: SCP",
           "href": "https://github.com/srk0102/SCP",
+          "icon": "github"
+        },
+        {
+          "anchor": "GitHub: Plexa",
+          "href": "https://github.com/srk0102/plexa",
           "icon": "github"
         }
       ]
@@ -40,18 +94,18 @@
   "navbar": {
     "links": [
       {
-        "label": "GitHub",
+        "label": "SCP on GitHub",
         "href": "https://github.com/srk0102/SCP"
       },
       {
-        "label": "npm",
-        "href": "https://npmjs.com/package/scp-protocol"
+        "label": "Plexa on GitHub",
+        "href": "https://github.com/srk0102/plexa"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Get Started",
-      "href": "/getting-started"
+      "label": "Get started",
+      "href": "/scp/introduction"
     }
   },
   "footer": {

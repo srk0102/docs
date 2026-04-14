@@ -1,0 +1,118 @@
+---
+title: Safety
+sidebarTitle: Safety
+description: Safety gate, approval hook, injection sanitizer, confidence gating.
+---
+
+# Safety
+
+Plexa has four layers of safety. They run in this order:
+
+```
+1. Translator         schema validation (always on)
+2. Safety rules       sync, hard gate, cannot be bypassed
+3. Approval hook      async, optional, can modify
+4. Body reflex        last-word veto, lives in the body class
+```
+
+The brain does not get to skip any of them.
+
+## Safety rules
+
+Sync functions that examine a validated command and return `{ allowed }`. Add as many as you need. The first blocker wins.
+
+```javascript
+space.addSafetyRule((cmd) => {
+  if (cmd.tool === "fire") return { allowed: false, reason: "never fire" }
+  if (cmd.tool === "apply_force" && cmd.parameters.magnitude > 0.9) {
+    return { allowed: false, reason: "magnitude over 0.9" }
+  }
+  return { allowed: true }
+})
+```
+
+A safety rule that throws is treated as a block. The Space emits `safety_blocked` and the dispatch is rejected.
+
+```javascript
+space.on("safety_blocked", (e) => {
+  console.log("blocked", e.command, e.reason)
+})
+```
+
+Stats track blockers separately:
+
+```javascript
+space.getStats().safetyBlocked
+```
+
+## Approval hook
+
+A single async function that runs after safety. May return `true`, `false`, or a modified command.
+
+```javascript
+space.addApprovalHook(async (cmd) => {
+  if (cmd.tool === "move" && cmd.parameters.speed > 0.8) {
+    return { ...cmd, parameters: { ...cmd.parameters, speed: 0.5 } }
+  }
+  if (cmd.tool === "delete_database") return false
+  return true
+})
+```
+
+If the hook retargets to a different body or tool, Plexa re-validates the modified command against the schema. Invalid modifications are rejected.
+
+A hook that throws is treated as a rejection. The Space emits `approval_error` and `approval_rejected`.
+
+There is one approval hook per Space. Calling `addApprovalHook` again replaces the previous one.
+
+## Prompt injection sanitizer
+
+The aggregator scrubs body-supplied strings before they reach the brain. Patterns it strips:
+
+- Role prefixes: `system:`, `user:`, `assistant:`, `human:`
+- Chat template tokens: `<|im_start|>`, `<|im_end|>`, `<|endoftext|>`, any `<|...|>`
+- Anthropic markers: `\n\nHuman:`, `\n\nAssistant:`
+- Known directives: `ignore previous instructions`, `disregard previous`, `you are now`, `forget the above`, `new instructions:`
+
+Each hit is replaced with `[redacted]`. Tool definitions are left alone (they are developer-authored and may legitimately use words like `user`).
+
+```javascript
+space.on("security_event", (e) => {
+  if (e.type === "prompt_injection_detected") {
+    console.warn(`stripped ${e.hits} injection patterns from sensor data`)
+  }
+})
+```
+
+To opt out (do not do this in production):
+
+```javascript
+new Space(name, { sanitizeInjection: false })
+```
+
+## Confidence gating
+
+`PatternStore` and `AdaptiveMemory` return a confidence on every hit. The body forwards that confidence when it reports a local decision via `notifyDecision`. Plexa classifies it:
+
+```javascript
+space.setConfidenceThresholds({
+  autoApprove: 0.9,    // execute silently
+  monitor:     0.6,    // execute and emit confidence_warning
+  escalate:    0.0,    // emit confidence_escalation; caller can force a brain call
+})
+```
+
+```javascript
+space.on("confidence_warning",  (e) => console.warn("low conf", e))
+space.on("confidence_escalation", (e) => requestBrainCall(e))
+```
+
+Per-body running averages live in `space.getStats().avgConfidenceByBody`.
+
+## Best practices for hardware bodies
+
+1. Put a hard cap on actuator inputs in a reflex inside the body. The brain can ask for `magnitude: 1.5`; the body should clamp before the motor sees it.
+2. Add a safety rule for the dangerous tool names you do not want the brain calling at all.
+3. Use the approval hook for human-in-the-loop on irreversible actions (writing to a database, sending an email, firing a motor).
+4. Bind the introspection server (port 4747) to `127.0.0.1` only. There is no auth.
+5. Run with `space.installShutdownHandlers()` so memory is saved on `SIGINT/SIGTERM`. Without this, an unclean stop loses the session.

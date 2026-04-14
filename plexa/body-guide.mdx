@@ -1,0 +1,175 @@
+---
+title: Body guide
+sidebarTitle: Body guide
+description: Write a body class for Plexa.
+---
+
+# Body guide
+
+A Plexa body is a class. It declares its tools, runs a tick loop, emits events, and optionally listens for events from peer bodies.
+
+## Minimal body
+
+```javascript
+const { BodyAdapter } = require("@srk0102/plexa")
+
+class Light extends BodyAdapter {
+  static bodyName = "light"
+  static tools = {
+    turn_on:  { description: "turn on",  parameters: {} },
+    turn_off: { description: "turn off", parameters: {} },
+    toggle:   { description: "toggle",   parameters: {} },
+  }
+
+  constructor() { super(); this.on = false }
+
+  async turn_on()  { this.on = true;  this.setState({ on: true });  return { on: true } }
+  async turn_off() { this.on = false; this.setState({ on: false }); return { on: false } }
+  async toggle()   { this.on = !this.on; this.setState({ on: this.on }); return { on: this.on } }
+}
+```
+
+That is a complete body. Add it to a Space and the brain can call any of the three tools.
+
+## static tools
+
+Each tool needs a description and a parameters schema. The schema fields Plexa understands:
+
+```javascript
+parameters: {
+  speed:     { type: "number", min: 0, max: 1, required: true },
+  direction: { type: "string", enum: ["left", "right"], required: true },
+  on:        { type: "boolean", required: false },
+}
+```
+
+The translator rejects intents that violate the schema and emits `intent_error`. Stats track rejections by reason in `space.getStats().translator.byReason`.
+
+## tick()
+
+The Space calls `tick()` on every body each frame at `tickHz`. Use it to read sensors and update state.
+
+```javascript
+async tick() {
+  await super.tick()
+  const reading = await readSonar()
+  this.setState({ distance: reading })
+
+  if (reading < 0.2) {
+    this.emit("obstacle", { distance: reading }, "CRITICAL")
+  }
+}
+```
+
+Always call `super.tick()`. Stats and counters live in the base class.
+
+## emit() with priority
+
+Priorities are `CRITICAL`, `HIGH`, `NORMAL`, `LOW`. The aggregator drops events in reverse priority order when the prompt approaches the token budget; CRITICAL events are preserved.
+
+```javascript
+this.emit("pole_critical", { angle: 0.9 }, "CRITICAL")
+this.emit("pole_warning",  { angle: 0.5 }, "HIGH")
+this.emit("state_update",  { angle: 0.1 }, "NORMAL")
+this.emit("heartbeat",     { tick: 120 }, "LOW")
+```
+
+Subscribe at the Space level:
+
+```javascript
+space.on("body_event", (e) => {
+  if (e.priority === "CRITICAL") notifyOps(e)
+})
+```
+
+## onPeerEvent for lateral events
+
+Bodies can talk to each other directly. Override `onPeerEvent` and link the two bodies in the Space.
+
+```javascript
+class LeftArm extends BodyAdapter {
+  async onPeerEvent(from, type, payload, priority) {
+    if (type === "grip_slip") await this.compensate(payload.force)
+  }
+}
+
+space.link("right_arm", "left_arm", ["grip_slip", "balance_shift"])
+```
+
+To send from inside another body's tick:
+
+```javascript
+await this.sendToPeer("left_arm", "grip_slip", { force: 3 }, "HIGH")
+```
+
+Direct in-process call. Plexa is not in the routing path. Self-links are silently ignored so you cannot accidentally infinite-loop a body.
+
+## Full working example
+
+```javascript
+const { Space, BodyAdapter } = require("@srk0102/plexa")
+const { OllamaBrain } = require("@srk0102/plexa/bridges/ollama")
+
+class CartpoleBody extends BodyAdapter {
+  static bodyName = "cartpole"
+  static tools = {
+    apply_force: {
+      description: "push cart left or right",
+      parameters: {
+        direction: { type: "string", enum: ["left", "right"], required: true },
+        magnitude: { type: "number", min: 0, max: 1, required: true },
+      },
+    },
+    hold: { description: "no-op", parameters: {} },
+  }
+
+  constructor() {
+    super()
+    this.physics = new CartpolePhysics()
+  }
+
+  async apply_force({ direction, magnitude }) {
+    this.physics.apply(direction, magnitude)
+    return { applied: direction, magnitude }
+  }
+  async hold() { this.physics.force = 0; return { ok: true } }
+
+  async tick() {
+    await super.tick()
+    this.physics.step()
+    this.setState({ pole_angle: this.physics.theta, cart_pos: this.physics.x })
+    if (Math.abs(this.physics.theta) > 0.8) {
+      this.emit("pole_critical", { angle: this.physics.theta }, "CRITICAL")
+    }
+  }
+}
+
+const space = new Space("balancer")
+space.addBody(new CartpoleBody())
+space.setBrain(new OllamaBrain({ model: "llama3.2" }))
+await space.run()
+```
+
+## Python bodies
+
+A body in Python coordinates with Plexa over HTTP. Plexa auto-wraps a class declaration like this and talks to the Python process through the network body contract.
+
+```javascript
+class MuJoCoCart extends BodyAdapter {
+  static bodyName = "cart"
+  static transport = "http"
+  static port = 8002
+}
+space.addBody(new MuJoCoCart())
+await space.ready()
+```
+
+The Python side exposes:
+
+- `GET /discover` returns `{ tools: { ... } }`
+- `GET /health` returns `{ ok: true }`
+- `GET /state` returns `{ data: { ... } }`
+- `GET /events` drains `{ events: [...] }`
+- `POST /tool` accepts `{ name, parameters }`
+
+The MuJoCo adapter in the SCP repo is a working example.

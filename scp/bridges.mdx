@@ -1,0 +1,134 @@
+---
+title: Bridges
+sidebarTitle: Bridges
+description: LLM connectors. Pick one, swap any time.
+---
+
+# Bridges
+
+A bridge is the thing the body calls when local layers cannot answer. All bridges extend `SCPBridge` and implement `call(prompt, tools)`.
+
+| Bridge          | Models                          | Cost (per 1k tokens) | Setup                        |
+|-----------------|---------------------------------|----------------------|------------------------------|
+| OllamaBridge    | llama3.2, mistral, qwen, phi    | $0.000               | Install Ollama, pull model   |
+| BedrockBridge   | Nova Micro, Claude via Bedrock  | $0.00013 (Nova Micro)| AWS credentials              |
+| OpenAIBridge    | gpt-4o-mini, gpt-4o             | $0.00015 (mini)      | OPENAI_API_KEY               |
+
+## OllamaBridge
+
+Free, local, no API key. Default for getting started.
+
+```bash
+ollama pull llama3.2
+ollama serve   # starts on http://localhost:11434
+```
+
+```javascript
+const { OllamaBridge } = require("scp-protocol/bridges/ollama")
+
+const bridge = new OllamaBridge({
+  model: "llama3.2",
+  host: "http://localhost:11434",
+  systemPrompt: "you control a cart-pole",
+  maxTokens: 256,
+  temperature: 0.1,
+})
+
+const result = await bridge.call({ entity: "drone" })
+```
+
+`OllamaBridge.isAvailable()` is a quick health check that returns a boolean and never throws.
+
+## BedrockBridge
+
+Wraps the AWS SDK Converse API. `@aws-sdk/client-bedrock-runtime` is an optional peer dep.
+
+```bash
+npm install @aws-sdk/client-bedrock-runtime
+```
+
+```javascript
+const { BedrockBridge } = require("scp-protocol/bridges/bedrock")
+
+const bridge = new BedrockBridge({
+  model: "amazon.nova-micro-v1:0",
+  region: "us-east-1",
+  systemPrompt: "...",
+})
+```
+
+Credentials follow the standard AWS chain (env, shared file, EC2 role).
+
+## OpenAIBridge
+
+Raw `node:https`. No SDK dependency.
+
+```javascript
+const { OpenAIBridge } = require("scp-protocol/bridges/openai")
+
+const bridge = new OpenAIBridge({
+  model: "gpt-4o-mini",
+  apiKey: process.env.OPENAI_API_KEY,
+})
+```
+
+## Writing a custom bridge
+
+Subclass `SCPBridge`. Implement `call(prompt, tools)`. Return whatever shape your body expects.
+
+```javascript
+const { SCPBridge } = require("scp-protocol")
+const https = require("node:https")
+
+class MyBridge extends SCPBridge {
+  constructor(opts = {}) {
+    super(opts)
+    this.endpoint = opts.endpoint
+    this.token = opts.token
+  }
+
+  async call(prompt, tools) {
+    const body = JSON.stringify({ prompt, tools, model: this.model })
+    const raw = await this._post(body)
+    const parsed = JSON.parse(raw)
+    return { decision: parsed.choice, raw: parsed }
+  }
+
+  _post(body) {
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        method: "POST",
+        hostname: this.endpoint,
+        port: 443,
+        path: "/v1/decide",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.token}`,
+        },
+      }, (res) => {
+        let data = ""
+        res.on("data", (c) => { data += c })
+        res.on("end", () => resolve(data))
+      })
+      req.on("error", reject)
+      req.write(body)
+      req.end()
+    })
+  }
+}
+```
+
+The base class tracks `callCount`, `errorCount`, `totalDurationMs`, and `lastCallMs`. Read them via `bridge.stats()`.
+
+## Cost comparison
+
+Sample run: 100 brain calls during a 10-minute session, ~400 tokens per call.
+
+| Bridge          | Total cost |
+|-----------------|------------|
+| OllamaBridge    | $0.00      |
+| Nova Micro      | $0.0052    |
+| GPT-4o Mini     | $0.0060    |
+| Claude Haiku    | $0.0100    |
+
+After the cache learns the typical situations, brain calls drop to a handful per minute and the numbers above shrink proportionally.

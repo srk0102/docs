@@ -1,0 +1,147 @@
+---
+title: API reference
+sidebarTitle: API reference
+description: Every public class and method in scp-protocol.
+---
+
+# API reference
+
+`scp-protocol` v0.5.0.
+
+## PatternStore
+
+```typescript
+new PatternStore(opts: {
+  featureExtractor?: (entity) => object
+  confidenceThreshold?: number    // default 0.6
+  maxPatterns?: number            // default 500
+  explorationRate?: number        // default 0.1
+  failureThreshold?: number       // default 3
+  storage?: "memory" | "localStorage" | "sqlite"
+  storageKey?: string
+})
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `lookup(entity)` | `{ decision, confidence, source } \| null` | source is `"exact"` or `"similar"` |
+| `learn(entity, decision)` | void | bumps count or creates new pattern |
+| `correct(entity, brainDecision)` | void | resets confidence and decision |
+| `report(entity, success: boolean)` | `{ found, invalidated }` | tracks consecutive failures |
+| `getSuccessRate(entity)` | number \| null | per-pattern rate |
+| `save()` | void | localStorage or sqlite |
+| `load()` | void | localStorage or sqlite |
+| `stats()` | object | hits, misses, hitRate, ... |
+
+Events: `pattern_invalidated` fires when a pattern crosses `failureThreshold`.
+
+## AdaptiveMemory
+
+```typescript
+new AdaptiveMemory(opts: {
+  threshold?: number           // default 0.8
+  maxHistory?: number          // default 500
+  k?: number                   // default 5
+  weights?: { [key: string]: number }
+  failureThreshold?: number    // default 3
+  storage?: "memory" | "sqlite"
+  storageKey?: string          // default "scp_adaptive.db"
+})
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `store(features, decision, outcome?)` | entry | reinforces if features already present |
+| `lookup(features)` | `{ decision, confidence } \| null` | top-k blended |
+| `report(features, success)` | `{ found, purged? }` | auto-purges at threshold |
+| `save()` | number | rows written to SQLite |
+| `load()` | number | rows loaded from SQLite |
+| `stats()` | object | entries, hits, misses, avgConfidence |
+
+Events: `entry_purged` fires when a decision is removed.
+
+## SCPBody
+
+```typescript
+new SCPBody(opts: {
+  name?: string
+  transport?: "inprocess" | "http"   // default "inprocess"
+  host?: string
+  port?: number                       // required when transport="http"
+  patternStore?: PatternStore
+  adaptiveMemory?: AdaptiveMemory
+})
+```
+
+Static fields a subclass may override:
+
+```typescript
+static bodyName: string
+static transport: "inprocess" | "http"
+static host: string
+static port: number
+static tools: { [name: string]: { description, parameters } }
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `invokeTool(name, params)` | result | calls the matching async method |
+| `decideLocally(entity)` | `{ decision, confidence, source } \| null` | walks pattern then adaptive |
+| `learnFromBrain(entity, decision)` | void | writes to both cache layers |
+| `notifyDecision(entity, decision, meta)` | void | tells the Space (managed mode) |
+| `rememberCachedEntity(entity)` | void | for outcome reporting |
+| `evaluateOutcome(state)` | `true \| false \| null` | override to enable auto-report |
+| `tick()` | promise | sensor loop; override and call super |
+| `setState(patch)` | void | merges into the live snapshot |
+| `emit(type, payload, priority)` | void | priority is `CRITICAL`, `HIGH`, `NORMAL`, `LOW` |
+| `snapshot()` | object | aggregator-shaped state |
+| `installShutdownHandlers()` | this | persists stores on SIGINT / SIGTERM |
+| `clearPendingEvents()` | void | empties the queue |
+
+## SCPAdapter (legacy)
+
+The v0.1 contract. Kept for backward compatibility. New code should use `SCPBody`.
+
+| Method | Notes |
+|---|---|
+| `reflex(name, fn)` | register a sync rule |
+| `_scpCall(method, args)` | legacy transport hook |
+
+## SCPBridge
+
+Base class for any LLM client.
+
+```typescript
+new SCPBridge(opts: {
+  model?: string
+  systemPrompt?: string
+  maxTokens?: number       // default 512
+  temperature?: number     // default 0.1
+})
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `call(prompt, tools)` | `{ decision, raw }` | implement in subclass |
+| `invoke(prompt, tools)` | same as call | adds timing |
+| `stats()` | object | callCount, errorCount, lastCallMs, avgCallMs |
+
+## Bridges
+
+- `OllamaBridge` -- local, free. `host` defaults to `http://localhost:11434`.
+- `BedrockBridge` -- AWS Converse. Requires `@aws-sdk/client-bedrock-runtime`.
+- `OpenAIBridge` -- raw HTTPS to `api.openai.com`. Reads `OPENAI_API_KEY`.
+
+## Transports
+
+`SCPBody` is in-process by default. Two explicit transports:
+
+- `HTTPTransport` -- `node:http` server with `/emit`, `/poll`, `/health`. No external dependency.
+- `WebSocketTransport` -- requires `ws` (optional peer dep).
+
+## PRIORITY
+
+```typescript
+const { PRIORITY } = require("scp-protocol")
+// { CRITICAL: 0, HIGH: 1, NORMAL: 2, LOW: 3 }
+```

@@ -1,109 +1,37 @@
 ---
-title: Introduction
-sidebarTitle: Introduction
+title: Welcome
+sidebarTitle: Welcome
 description: Real-time AI execution runtime for embodied systems.
 ---
 
-# What is SCP
+# Welcome
 
-SCP connects any LLM to any body -- physical or virtual -- without retraining.
+This site documents two npm packages that work together.
 
-**In MCP the brain asks. In SCP the muscle asks.**
-
-The body runs at 60fps. The brain sleeps until needed. The muscle handles 99%. The brain handles 1%.
-
-## SCP vs Plexa
-
-| | scp-protocol | plexa |
+| Package | What it is | Start here |
 |---|---|---|
-| **Scope** | one body | many bodies under one brain |
-| **Role** | protocol + SDK | orchestration framework |
-| **Analogy** | LangChain for bodies | LangGraph for bodies |
-| **npm** | `scp-protocol` | `@srk0102/plexa` |
-
-Use SCP when you have one embodied agent. Use [Plexa](https://github.com/srk0102/plexa) when you have several and want one LLM coordinating all of them. Plexa is built on SCP.
-
-## The three layers
-
-SCP splits intelligence by speed, the same way biological nervous systems work.
-
-| Layer | Latency | What it does |
-|-------|---------|--------------|
-| **Reflex** | 0-5ms | Hardcoded rules. Emergency stops. Never asks brain. |
-| **Muscle** | 5-50ms | Pattern store. Replays past brain decisions locally. |
-| **Brain** | 500ms-3s | LLM. Handles novel situations only. Called less over time. |
-
-## How it differs from MCP
-
-| | MCP | SCP |
-|---|---|---|
-| **Who initiates** | Brain asks, tool answers | Body acts, brain advises |
-| **Body behavior** | Passive (waits) | Active (runs at 60fps) |
-| **Events** | Pull only | Body pushes events up |
-| **Memory** | None | Pattern store replays decisions |
-| **Cost over time** | Constant | Drops to near zero |
-
-## The learning loop
-
-```
-Brain makes a decision
-  Pattern store logs it
-    Same situation next time
-      Pattern store handles it locally
-        No brain call. Zero cost.
-```
-
-After 3 consistent brain decisions on the same pattern, the muscle handles it forever.
-
-### Real session data
-
-| Session | Brain calls | Cost |
-|---------|------------|------|
-| 1 | 125 | $0.125 |
-| 2 | 40 | $0.040 |
-| 3 | 8 | $0.008 |
-| 4+ | 0 | $0.000 |
-
-## Three adapters, same brain
-
-The core claim: swap the adapter, the brain and protocol stay identical.
-
-| Adapter | Body | What it proves |
-|---------|------|----------------|
-| Missile Defense | 10 launchers, 4 entity types | Brain classifies stealth, vetoes planes |
-| Self-Driving Car | Car on 3-lane road | Ambulance yield, obstacle avoidance |
-| 10-Lane Highway | Divided highway | Traffic signals, chaos mode |
-
-Same Nova Micro. Same bridge. Same protocol. Zero code changes.
-
-## What exists today
-
-<Note>
-SCP is v0.1.0. Only items listed below exist and are tested.
-</Note>
-
-- PatternStore with similarity matching, confidence scoring, exploration rate
-- SCPAdapter base class with reflex layer
-- SCPBridge base class
-- SQLite persistence via better-sqlite3
-- Three working adapters
-- 56 tests passing
+| [`scp-protocol`](/scp/introduction) | One body, one LLM. The body class, pattern store, adaptive memory. | [SCP introduction](/scp/introduction) |
+| [`@srk0102/plexa`](/plexa/introduction) | One brain, many bodies. Built on scp-protocol. | [Plexa introduction](/plexa/introduction) |
 
 ## Install
 
 ```bash
+# one body
 npm install scp-protocol
+
+# many bodies under one brain
+npm install @srk0102/plexa
 ```
 
-Zero external services. SQLite ships bundled. Works immediately.
+## In one paragraph
 
-## Next steps
+In MCP the brain asks. In SCP the muscle asks. A body runs at 60Hz, holds its own decision cache, and only consults an LLM when the cache cannot answer. Plexa stacks several of those bodies under a single brain and adds cross-session memory, safety gates, and lateral body-to-body events.
 
-<CardGroup cols={2}>
-  <Card title="Getting started" icon="rocket" href="/getting-started">
-    Clone, install, and run your first adapter in under 10 minutes.
-  </Card>
-  <Card title="GitHub" icon="github" href="https://github.com/srk0102/SCP">
-    Source code, all three adapters, and the frozen protocol schema.
-  </Card>
-</CardGroup>
+## Walk through a working example
+
+The fastest way to understand the stack is to run one. See [Cart pole](/examples/cart-pole) for an end-to-end walkthrough that goes from `npm install` to a balanced inverted pendulum.
+
+## Source
+
+- SCP: [github.com/srk0102/SCP](https://github.com/srk0102/SCP)
+- Plexa: [github.com/srk0102/plexa](https://github.com/srk0102/plexa)

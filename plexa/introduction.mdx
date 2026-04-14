@@ -1,0 +1,74 @@
+---
+title: Introduction
+sidebarTitle: Introduction
+description: One brain, many bodies. Built on scp-protocol.
+---
+
+# What is Plexa
+
+Plexa is the orchestration layer above SCP. It runs a tick loop, packs every body's state into a brain prompt, applies safety rules, dispatches the brain's tool intent as a direct method call, and remembers what worked across sessions.
+
+```bash
+npm install @srk0102/plexa
+```
+
+If you only have one body, use [`scp-protocol`](/scp/introduction) directly. Plexa starts paying for itself when you have two or more.
+
+## SCP vs Plexa
+
+| | scp-protocol | @srk0102/plexa |
+|---|---|---|
+| Scope | one body | many bodies under one brain |
+| Role | protocol + body SDK | orchestrator |
+| Memory | pattern store + adaptive memory (per body) | adds vertical memory (per space, cross-session) |
+| Safety | reflex rules in the body | adds safety gate + approval hook + injection sanitizer |
+| Cost tracking | per-bridge counters | per-space USD totals + cache savings |
+| Lateral events | not applicable | `space.link(from, to, types)` |
+
+## When to use which
+
+Use **scp-protocol** when:
+
+- You have one body.
+- You want full control over the tick loop.
+- You do not need cross-session memory at the orchestrator level.
+
+Use **Plexa** when:
+
+- You have several bodies and want one LLM coordinating them.
+- You need cross-session memory that the brain can search before deciding.
+- You want a hard safety gate that cannot be bypassed by the LLM.
+- You want bodies to talk to each other directly without going through the brain.
+
+## Quick start
+
+```javascript
+const { Space, BodyAdapter, VerticalMemory } = require("@srk0102/plexa")
+const { OllamaBrain } = require("@srk0102/plexa/bridges/ollama")
+
+class Cart extends BodyAdapter {
+  static bodyName = "cart"
+  static tools = {
+    apply_force: {
+      description: "push the cart",
+      parameters: {
+        direction: { type: "string", enum: ["left", "right"], required: true },
+        magnitude: { type: "number", min: 0, max: 1, required: true },
+      },
+    },
+  }
+  async apply_force({ direction, magnitude }) { /* drive hardware */ }
+}
+
+const space = new Space("balancer", {
+  verticalMemory: new VerticalMemory({ spaceName: "balancer", dbPath: "./plexa.db" }),
+})
+space.addBody(new Cart())
+space.setBrain(new OllamaBrain({ model: "llama3.2" }))
+space.installShutdownHandlers()
+await space.run()
+```
+
+## The starfish
+
+Plexa's logo is a starfish. A starfish has no central brain; it has a ring of nerves that coordinate many independent arms. Each arm decides locally; the ring coordinates when an action needs more than one arm. That is the same shape as a Plexa Space coordinating many SCP bodies.

@@ -1,0 +1,126 @@
+---
+title: Memory
+sidebarTitle: Memory
+description: Three layers of memory. The brain gets quieter every run.
+---
+
+# Memory
+
+Plexa stacks three layers between the body and the LLM. Each one answers more situations than the next, so the brain gets called less and less.
+
+```
+PatternStore        per body         exact / near-exact match     0.1 ms
+AdaptiveMemory      per body         similarity-scored match      1 to 5 ms
+VerticalMemory      per Space        cross-session world states   5 ms (sqlite)
+LLM brain           shared           novel situations only        500 ms+
+```
+
+## PatternStore
+
+Per body. Caches exact and very-similar (entity, decision) pairs. Lives in `scp-protocol`.
+
+```javascript
+const { PatternStore } = require("scp-protocol")
+
+const store = new PatternStore({
+  featureExtractor: (entity) => ({ kind: entity.kind }),
+  failureThreshold: 3,
+})
+```
+
+Full reference: see [SCP memory layers](/scp/pattern-store).
+
+## AdaptiveMemory
+
+Per body. Generalizes to "this looks like one we have seen before" using weighted euclidean distance and top-k confidence blending.
+
+```javascript
+const { AdaptiveMemory } = require("scp-protocol")
+
+const mem = new AdaptiveMemory({
+  threshold: 0.8,
+  k: 5,
+  storage: "sqlite",
+  storageKey: "scp_adaptive.db",
+})
+```
+
+Wired into a body via `new SCPBody({ patternStore, adaptiveMemory })`.
+
+## VerticalMemory
+
+Per Space. Cross-session memory of brain decisions for a given world state. This is what lets Plexa skip the LLM on repeated tasks.
+
+```javascript
+const { VerticalMemory } = require("@srk0102/plexa")
+
+const mem = new VerticalMemory({
+  spaceName: "robot",
+  dbPath: "./plexa-memory.db",
+  hitThreshold: 0.85,
+})
+
+const space = new Space("robot", { verticalMemory: mem })
+```
+
+On each brain tick, Plexa calls `mem.search(worldState)` first. If the top match scores above `hitThreshold`, Plexa uses the remembered decision and skips the LLM. The `memory_hit` event fires.
+
+```javascript
+space.on("memory_hit", (e) => {
+  console.log("served from memory, conf=", e.confidence)
+})
+```
+
+Otherwise the brain runs and the response is written back via `mem.store`.
+
+Stats:
+
+```javascript
+space.getStats().memoryHits
+space.getStats().memoryMisses
+space.getStats().memoryHitRate
+space.getStats().verticalMemory   // { total, sessionsCount, hitRate, byBody, ... }
+```
+
+## How they work together
+
+```
+brain decision arrives
+  -> body.learnFromBrain(entity, decision)
+     -> patternStore.learn       (exact replay)
+     -> adaptiveMemory.store     (generalization)
+  -> Space.verticalMemory.store  (cross-session, world-state keyed)
+```
+
+Three layers of write-through. Three layers of read-through on the next tick. The further you get into a session, the rarer the LLM call.
+
+## Cost reduction
+
+Sample run on a Plexa stub workload, 100 brain decisions during ramp-up:
+
+| Session | LLM calls | Cache + memory hits | Brain cost (Nova Micro) |
+|---------|----------:|--------------------:|------------------------:|
+| 1       | 80        | 20                  | $0.0042                 |
+| 2       | 30        | 70                  | $0.0016                 |
+| 3       | 8         | 92                  | $0.0004                 |
+| 4       | 1         | 99                  | $0.0001                 |
+
+Numbers vary by task. The shape is the same: the brain quiets down, the cost drops, the latency stops bottlenecking on the LLM.
+
+## Persistence
+
+`AdaptiveMemory` and `VerticalMemory` use `better-sqlite3`. Plexa lists it as a `devDependency`, not a runtime one, so production users opt in:
+
+```bash
+npm install better-sqlite3
+```
+
+If `better-sqlite3` is not installed, both stores still work in memory; persistence calls return `0` and the warning shows up at startup.
+
+## Auto-save on shutdown
+
+```javascript
+space.installShutdownHandlers()
+```
+
+On `SIGINT` or `SIGTERM`, Plexa calls `space.stop()`, which saves the vertical memory and every body's pattern store and adaptive memory.

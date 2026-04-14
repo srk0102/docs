@@ -1,150 +1,58 @@
 ---
 title: Getting started
 sidebarTitle: Getting started
-description: Install SCP and run your first adapter in under 10 minutes.
+description: Pick a package, install, run an example.
 ---
 
 # Getting started
 
-Clone the repo, start the server, watch an adapter learn from an LLM brain in real time.
+Three steps to a running body.
 
-## Prerequisites
-
-- Node.js 18+
-- AWS account with Bedrock access (Nova Micro)
-- Two terminal windows
-
-<Note>
-OllamaBridge (free, local, zero cost) is coming in v0.2.0. Today, Bedrock Nova Micro is the only bridge at $0.001 per brain call.
-</Note>
-
-## Clone and install
-
-<Steps>
-  <Step title="Clone the repository">
-    ```bash
-    git clone https://github.com/srk0102/SCP.git
-    cd SCP
-    ```
-  </Step>
-  <Step title="Install dependencies">
-    ```bash
-    cd server && npm install && cd ..
-    cd client && npm install && cd ..
-    ```
-  </Step>
-  <Step title="Set AWS credentials">
-    Create `.env` in the project root:
-    ```bash
-    AWS_ACCESS_KEY_ID=your_key_here
-    AWS_SECRET_ACCESS_KEY=your_secret_here
-    AWS_REGION=us-east-1
-    ```
-  </Step>
-</Steps>
-
-<Warning>
-Never commit your `.env` file. It is already in `.gitignore`.
-</Warning>
-
-## Start the server
-
-You need two terminals running simultaneously.
-
-**Terminal 1** -- WebSocket bridge (port 7777):
-```bash
-cd server
-node ws-bridge.js
-```
-
-**Terminal 2** -- LLM bridge (polls events, calls Nova Micro):
-```bash
-cd client
-node qwen-mcp-bridge.js
-```
-
-## Open an adapter
-
-Serve any adapter and open it in your browser:
+## 1. Pick a package
 
 ```bash
-cd adapters/self-driving-car
-python -m http.server 8080
+# one body
+npm install scp-protocol
+
+# many bodies, one brain
+npm install @srk0102/plexa
 ```
 
-Open `http://localhost:8080/muscle.html`. Press **Play**.
+If you are not sure which to use, start with `@srk0102/plexa`. It includes everything in `scp-protocol` plus orchestration.
 
-<CardGroup cols={3}>
-  <Card title="Missile Defense" icon="crosshairs">
-    10 launchers, 4 entity types, 3 modes.
-  </Card>
-  <Card title="Self-Driving Car" icon="car">
-    3-lane road with ambulances and obstacles.
-  </Card>
-  <Card title="10-Lane Highway" icon="road">
-    Traffic signals, lane narrowing, chaos mode.
-  </Card>
-</CardGroup>
+## 2. Get a brain (optional)
 
-## What you will see
+The bundled examples fall back to a stub brain that rotates through sensible actions, so you can run them without any LLM. To use a real brain locally:
 
-Brain calls drop over time as the pattern store learns:
-
-| Time | Brain calls/min |
-|------|----------------|
-| Start | 27 |
-| 2 min | 8 |
-| 5 min | 1 |
-| 10 min | 0 |
-
-**Brain teaches once. Muscle remembers forever.**
-
-## How it works
-
-```
-Muscle detects entity
-  Pattern store: seen this before?
-    YES -> handle locally (0.1ms, $0)
-    NO  -> emit event to brain
-            Brain classifies (500ms, $0.001)
-              Pattern store logs decision
-                Next time -> handle locally
+```bash
+# install ollama from https://ollama.ai
+ollama pull llama3.2
+ollama serve   # starts on http://localhost:11434
 ```
 
-## The three file contract
+For hosted brains, set credentials:
 
-Every adapter is exactly three files:
+- `ANTHROPIC_API_KEY` for `AnthropicBrain`.
+- AWS credentials in the standard chain for `BedrockBrain`.
 
-| File | Purpose |
-|------|---------|
-| `embodiment.json` | Describes the body: actuators, sensors, constraints |
-| `muscle.js` | Physics, rendering, sensor logic, pattern store |
-| `system-prompt.md` | Tells the brain what entities mean |
+## 3. Run an example
 
-The protocol, server, and bridge are shared. You only write the adapter.
+```bash
+git clone https://github.com/srk0102/plexa.git
+cd plexa
+npm install
+node examples/inprocess-demo/index.js
+```
 
-## Cost
+Walkthrough version of the same example: [Cart pole](/examples/cart-pole).
 
-| | Cost |
+## Where to go next
+
+| You want | Page |
 |---|---|
-| Per brain call | $0.001 |
-| First session (~125 calls) | $0.125 |
-| After learning phase | $0.000 |
-
-## Troubleshooting
-
-<Accordion title="WebSocket connection refused on port 7777">
-Start Terminal 1 (`node ws-bridge.js`) before opening the browser adapter.
-</Accordion>
-
-<Accordion title="Bridge says 'waiting for muscle to connect'">
-Open the browser adapter first. The bridge detects it within a few seconds.
-</Accordion>
-
-<Accordion title="AWS credentials error">
-Check `.env` has `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`. The region must have Bedrock access for Nova Micro.
-</Accordion>
-
-<Accordion title="No brain calls happening">
-The pattern store has cached decisions from a previous session. Clear your browser localStorage to force fresh brain calls.
-</Accordion>
+| Understand the three layers | [SCP: How it works](/scp/how-it-works) |
+| Write your own body | [SCP: Adapter guide](/scp/adapter-guide) |
+| Coordinate several bodies | [Plexa: How it works](/plexa/how-it-works) |
+| Add safety rules and approval | [Plexa: Safety](/plexa/safety) |
+| Make memory survive restarts | [Plexa: Memory](/plexa/memory) |
+| API surface | [SCP API](/scp/api), [Plexa API](/plexa/api) |

@@ -1,0 +1,192 @@
+---
+title: API reference
+sidebarTitle: API reference
+description: Every public class and method in @srk0102/plexa.
+---
+
+# API reference
+
+`@srk0102/plexa` v0.5.0.
+
+## Space
+
+```typescript
+new Space(name: string, opts?: {
+  tickHz?: number               // default 60
+  aggregateEveryTicks?: number  // default 30
+  brainIntervalMs?: number      // default 2000
+  tokenBudget?: number          // default 2000
+  allowedTools?: Set<string>
+  verticalMemory?: VerticalMemory
+  sanitizeInjection?: boolean   // default true
+})
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `addBody(adapter)` | this | auto-wraps a `transport="http"` body |
+| `setBrain(brain)` | this | required before run |
+| `setGoal(goal)` | this | string seen by the brain |
+| `run()` | promise | starts the reactor |
+| `stop()` | promise | persists vertical memory + body stores |
+| `ready()` | promise | resolves after async discovery completes |
+| `installShutdownHandlers()` | this | SIGINT / SIGTERM persist |
+| `addSafetyRule(rule)` | this | sync `(cmd) => { allowed, reason? }` |
+| `addApprovalHook(hook)` | this | async `(cmd) => true \| false \| modifiedCmd` |
+| `setConfidenceThresholds({ autoApprove, monitor, escalate })` | this | for body decisions |
+| `link(from, to, types)` | this | route lateral events |
+| `unlink(from, to, types?)` | this | clear a peer route |
+| `getStats()` | object | full snapshot |
+| `getTools()` | array | discovered tool registry |
+
+Events emitted on `Space`:
+
+| Event | Payload |
+|---|---|
+| `started`, `stopped` | none |
+| `body_registered` | `{ name, transport, port, tools }` |
+| `body_discovered` | `{ name, tools }` |
+| `body_event` | `{ body, type, payload, priority }` |
+| `body_decision` | `{ body, entity, decision, meta, ts }` |
+| `tool_dispatched` | `{ body, tool, parameters, value, durationMs }` |
+| `tool_error` | `{ body, tool, parameters, error }` |
+| `intent_error` | `{ intent, reason, error }` |
+| `safety_blocked` | `{ command, reason }` |
+| `approval_rejected` | `{ command }` |
+| `approval_modified` | `{ command }` |
+| `approval_error` | `{ command, error }` |
+| `confidence_warning` | `{ body, entity, decision, confidence, meta }` |
+| `confidence_escalation` | same as warning |
+| `peer_event` | `{ from, to, type, priority }` |
+| `peer_event_error` | `{ from, to, type, error }` |
+| `memory_hit` | `{ decision, confidence }` |
+| `memory_error` | `{ error }` |
+| `security_event` | `{ type, hits, space }` |
+| `tick_error`, `brain_error` | `{ body, error }` / Error |
+
+## BodyAdapter
+
+Aliased as `SCPBody`. Constructor and static fields:
+
+```typescript
+new BodyAdapter(opts?: {
+  name?: string
+  transport?: "inprocess" | "http"
+  host?: string
+  port?: number
+  patternStore?: PatternStore
+  adaptiveMemory?: AdaptiveMemory
+})
+
+static bodyName?: string
+static transport?: "inprocess" | "http"
+static host?: string
+static port?: number
+static tools?: { [name: string]: { description, parameters } }
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `invokeTool(name, params)` | result | calls the matching async method |
+| `decideLocally(entity)` | `{ decision, confidence, source } \| null` | walks pattern then adaptive |
+| `learnFromBrain(entity, decision)` | void | writes to both cache layers |
+| `notifyDecision(entity, decision, meta)` | void | feeds Space.onBodyDecision |
+| `evaluateOutcome(state)` | `true \| false \| null` | override for auto-report |
+| `tick()` | promise | sensor loop |
+| `setState(patch)` | void | merge into snapshot |
+| `emit(type, payload, priority)` | void | priority is `CRITICAL`, `HIGH`, `NORMAL`, `LOW` |
+| `snapshot()` | object | aggregator-shaped state |
+| `clearPendingEvents()` | void |  |
+| `sendToPeer(target, type, payload, priority)` | promise | direct route via Space |
+| `onPeerEvent(from, type, payload, priority)` | promise | override to receive |
+| `onConfigure()`, `onActivate()`, `onEmergencyStop()` | promise | lifecycle hooks |
+
+## Brain
+
+```typescript
+new Brain(opts?: {
+  model?: string
+  systemPrompt?: string
+  maxTokens?: number       // 512
+  temperature?: number     // 0.1
+  maxRetries?: number      // 2
+  retryDelayMs?: number    // 1000
+  costPerKToken?: number   // overrides table lookup
+})
+```
+
+| Method | Returns |
+|---|---|
+| `invoke(worldState)` | `intent \| null` |
+| `_rawCall(prompt)` | string (subclass implements) |
+| `buildPrompt(worldState)` | string |
+| `parseResponse(raw)` | intent or null |
+| `stats()` | `{ calls, errors, retriesTotal, retrySuccesses, totalCost, totalInputTokens, totalOutputTokens, avgCallMs, ... }` |
+
+Static:
+
+```typescript
+Brain.costForModel(name: string): number       // USD per 1k tokens
+Brain.DEFAULT_COST_TABLE: Array<[prefix, usd]>
+```
+
+## Brain bridges
+
+- `OllamaBrain({ model, host, ... })` -- `host` defaults to `http://localhost:11434`.
+- `BedrockBrain({ model, region, ... })` -- needs `@aws-sdk/client-bedrock-runtime`. Wraps scp-protocol's BedrockBridge.
+- `AnthropicBrain({ apiKey, model, ... })` -- raw HTTPS to `api.anthropic.com`. Default model `claude-haiku-4-5-20251001`.
+
+## Translator
+
+Validates an intent against the body's tool schema. Reject reasons: `unknown_body`, `unknown_tool`, `missing_required`, `wrong_type`, `out_of_range`, `not_in_enum`, `malformed`.
+
+```typescript
+translator.translate(intent, bodies): { ok: true, command } | { ok: false, reason, error }
+translator.getStats(): { translations, rejections, byReason }
+```
+
+## Aggregator
+
+Packs world state into a token budget with priority-aware trimming. Strips prompt-injection patterns before returning.
+
+```typescript
+new Aggregator({ tokenBudget?: 2000, maxHistory?: 10, sanitizeInjection?: true })
+aggregator.aggregate(bodies, opts): worldState
+aggregator.getStats(): { aggregations, trimmed, droppedEvents, maxTokens, injectionHits, ... }
+```
+
+## VerticalMemory
+
+```typescript
+new VerticalMemory({ spaceName, dbPath?, hitThreshold?, maxEntries? })
+mem.store(body, tool, worldState, decision, meta?)
+mem.search(worldState, limit?): Array<{ body, tool, decision, confidence, age_ms }>
+mem.recordOutcome(body, tool, success): boolean
+mem.save(): number
+mem.load(): number
+mem.stats(): { total, sessionsCount, hits, misses, hitRate, byBody, ... }
+```
+
+## AdaptiveMemory
+
+Re-exported from scp-protocol. See [SCP API](/scp/api).
+
+## attachIntrospection
+
+```typescript
+attachIntrospection(space, { port?: 4747 })
+```
+
+Starts an HTTP server with `/plexa/status`, `/plexa/bodies`, `/plexa/logs`, `/plexa/health`. No auth. Bind to localhost only.
+
+## CLI
+
+```bash
+npx @srk0102/plexa version
+npx @srk0102/plexa status
+npx @srk0102/plexa bodies
+npx @srk0102/plexa logs
+npx @srk0102/plexa start ./space.js
+```
+
+The CLI talks to the introspection server.

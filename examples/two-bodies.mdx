@@ -1,0 +1,142 @@
+---
+title: Two bodies
+sidebarTitle: Two bodies
+description: One brain coordinating two bodies, with lateral events.
+---
+
+# Two bodies
+
+This example runs two bodies in one Space. A cart-pole and a light. The brain alternates between them. The cart-pole emits a CRITICAL event that the light receives directly via a lateral link.
+
+## The whole file
+
+`two-bodies.js`:
+
+```javascript
+const { Space, BodyAdapter, Brain } = require("@srk0102/plexa")
+const { OllamaBrain } = require("@srk0102/plexa/bridges/ollama")
+
+// -- Cartpole physics omitted; same as the cart-pole example --
+
+class CartpoleBody extends BodyAdapter {
+  static bodyName = "cartpole"
+  static tools = {
+    apply_force: {
+      description: "push the cart",
+      parameters: {
+        direction: { type: "string", enum: ["left", "right"], required: true },
+        magnitude: { type: "number", min: 0, max: 1, required: true },
+      },
+    },
+    hold: { description: "no-op", parameters: {} },
+  }
+  constructor() { super(); this.physics = new CartpolePhysics() }
+  async apply_force({ direction, magnitude }) { this.physics.apply(direction, magnitude); return {} }
+  async hold() { return {} }
+  async tick() {
+    await super.tick()
+    this.physics.step()
+    this.setState({ pole_angle: this.physics.theta })
+    if (Math.abs(this.physics.theta) > 0.7) {
+      this.emit("pole_critical", { angle: this.physics.theta }, "CRITICAL")
+    }
+  }
+}
+
+class LightBody extends BodyAdapter {
+  static bodyName = "light"
+  static tools = {
+    turn_on:  { description: "turn on",  parameters: {} },
+    turn_off: { description: "turn off", parameters: {} },
+    toggle:   { description: "toggle",   parameters: {} },
+  }
+  constructor() { super(); this.on = false; this.alarmCount = 0 }
+
+  async turn_on()  { this.on = true;  return { on: true } }
+  async turn_off() { this.on = false; return { on: false } }
+  async toggle()   { this.on = !this.on; return { on: this.on } }
+
+  // Lateral event from the cartpole when it goes critical.
+  async onPeerEvent(from, type, payload) {
+    if (type === "pole_critical") {
+      this.alarmCount++
+      this.on = true
+      console.log(`[light] alarm from ${from}, lit (count=${this.alarmCount})`)
+    }
+  }
+}
+
+class StubBrain extends Brain {
+  constructor() { super({ model: "stub" }); this._i = 0 }
+  async _rawCall() {
+    this._i++
+    if (this._i % 3 === 0) {
+      return JSON.stringify({ target_body: "light", tool: "toggle", parameters: {} })
+    }
+    return JSON.stringify({
+      target_body: "cartpole",
+      tool: "apply_force",
+      parameters: { direction: this._i % 2 === 0 ? "left" : "right", magnitude: 0.4 },
+    })
+  }
+}
+
+async function main() {
+  const space = new Space("two_bodies", { tickHz: 60, brainIntervalMs: 1500 })
+  const cart = new CartpoleBody()
+  const light = new LightBody()
+  space.addBody(cart)
+  space.addBody(light)
+
+  // Lateral link: pole_critical from cartpole goes directly to light.onPeerEvent.
+  space.link("cartpole", "light", ["pole_critical"])
+
+  const ollamaUp = await OllamaBrain.isAvailable()
+  space.setBrain(ollamaUp ? new OllamaBrain({ model: "llama3.2", maxTokens: 120 }) : new StubBrain())
+
+  space.on("tool_dispatched", (e) =>
+    console.log(`[plexa] ${e.body}.${e.tool}(${JSON.stringify(e.parameters)})`)
+  )
+  await space.run()
+  console.log(`[plexa] running, brain=${ollamaUp ? "ollama" : "stub"}`)
+}
+main()
+```
+
+## Run
+
+```bash
+node two-bodies.js
+```
+
+## Real output
+
+```
+[plexa] running, brain=stub
+[plexa] cartpole.apply_force({"direction":"right","magnitude":0.4})
+[plexa] cartpole.apply_force({"direction":"left","magnitude":0.4})
+[light] alarm from cartpole, lit (count=1)
+[plexa] light.toggle({})
+[plexa] cartpole.apply_force({"direction":"right","magnitude":0.4})
+[light] alarm from cartpole, lit (count=2)
+[plexa] cartpole.apply_force({"direction":"left","magnitude":0.4})
+[plexa] light.toggle({})
+^C
+```
+
+Two things to notice:
+
+1. The `[light] alarm from cartpole` lines come from the **lateral link**. The cartpole emits `pole_critical`; Plexa routes it directly to `light.onPeerEvent`. The brain is not involved. There is no broadcast: a third body would not have received it.
+2. `light.toggle` calls come from the brain, not the link. Both kinds of dispatch coexist.
+
+## What this proves
+
+- One Plexa Space can hold many bodies.
+- The brain can address either body by name.
+- Bodies can talk to each other directly with zero latency.
+- The brain never sees `onPeerEvent` calls; they are body-local concerns.
+
+## What does not work yet
+
+- There is no shared CRDT between bodies. If the light needs to know the cartpole's exact angle, it has to be told via a peer event (or pull from the world state on the next brain tick).
+- Lateral events do not survive a process restart; only the brain's memory does (via `VerticalMemory`).

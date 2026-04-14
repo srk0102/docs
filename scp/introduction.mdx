@@ -1,0 +1,62 @@
+---
+title: Introduction
+sidebarTitle: Introduction
+description: Spatial Context Protocol — real-time AI execution runtime for one embodied system.
+---
+
+# What is SCP
+
+SCP gives one body to one LLM. The body runs at 60Hz, holds its own decision cache, and only calls the brain when the cache cannot answer. After a few sessions on the same task, the brain stops being called at all.
+
+```bash
+npm install scp-protocol
+```
+
+If you have several bodies to coordinate, install [Plexa](/plexa/introduction) on top.
+
+## How it differs from MCP
+
+| | MCP | SCP |
+|---|---|---|
+| Who initiates | Brain asks, tool answers | Body acts, brain advises |
+| Body | Passive (waits) | Active (60Hz tick loop) |
+| Memory | None | Pattern store + adaptive memory |
+| Cost over time | Constant | Drops to near zero |
+
+## What SCP adds to MCP
+
+1. **Body class with a tick loop**. `SCPBody` runs at 60Hz, owns its sensors, owns its actuators. The brain is a slow advisor, not the driver.
+2. **Pattern store**. Every brain decision is cached against a feature vector. Next time the same situation appears, the body answers locally in 0.1 ms.
+3. **Adaptive memory**. When the cache misses but a similar situation has been seen, a similarity-scored layer answers without a brain call.
+
+## Quick start
+
+```javascript
+const { SCPBody, PatternStore, AdaptiveMemory } = require("scp-protocol")
+const { OllamaBridge } = require("scp-protocol/bridges/ollama")
+
+class Patrol extends SCPBody {
+  static bodyName = "patrol"
+  static tools = {
+    halt: { description: "stop", parameters: {} },
+    advance: {
+      description: "move forward",
+      parameters: { speed: { type: "number", min: 0, max: 1, required: true } },
+    },
+  }
+  async halt() { /* drive hardware */ }
+  async advance({ speed }) { /* drive hardware */ }
+}
+
+const body = new Patrol({
+  patternStore: new PatternStore({ featureExtractor: (e) => ({ kind: e.kind }) }),
+  adaptiveMemory: new AdaptiveMemory({ threshold: 0.8 }),
+  brain: new OllamaBridge({ model: "llama3.2" }),
+})
+```
+
+That is the whole contract a body owner has to write. Sensor reading, brain calling, and outcome reporting happen inside the base class.
+
+## Examples
+
+See [/examples/cart-pole](/examples/cart-pole) for a complete walkthrough that goes from `npm install` to a balanced inverted pendulum in under ten minutes.

@@ -1,0 +1,122 @@
+---
+title: How it works
+sidebarTitle: How it works
+description: Space, bodies, tools, and the four jobs.
+---
+
+# How it works
+
+A Plexa `Space` is a single-process reactor. It owns a tick loop, a set of bodies, a brain, and a few caches.
+
+```
+       60 Hz tick loop
+            |
+   for each body: body.tick()
+            |
+   maybe call brain (every brainIntervalMs):
+       1. aggregate world state
+       2. ask vertical memory; on hit, skip the LLM
+       3. call brain
+       4. validate intent (translator)
+       5. run safety rules
+       6. run approval hook
+       7. dispatch as direct method call on the body
+```
+
+Everything between steps 4 and 7 is the gate. The LLM never reaches an actuator without passing it.
+
+## Space
+
+The orchestrator. Holds bodies, the brain, the tool registry, and the gates.
+
+```javascript
+const space = new Space("my_robot", {
+  tickHz: 60,
+  brainIntervalMs: 2000,
+  tokenBudget: 2000,
+  verticalMemory: someVerticalMemory,
+  sanitizeInjection: true,
+})
+
+space.addBody(arm)
+space.addBody(camera)
+space.setBrain(new OllamaBrain({ model: "llama3.2" }))
+space.setGoal("pick the red block, put it in the box")
+await space.run()
+```
+
+The reactor runs until you call `space.stop()`.
+
+## BodyAdapter
+
+A body is a class with one async method per tool. The `static tools` map is the contract the brain sees.
+
+```javascript
+class Arm extends BodyAdapter {
+  static bodyName = "arm"
+  static tools = {
+    grasp: { description: "close gripper", parameters: {} },
+    move:  {
+      description: "move end-effector",
+      parameters: {
+        x: { type: "number", required: true },
+        y: { type: "number", required: true },
+      },
+    },
+  }
+  async grasp() { /* ... */ }
+  async move({ x, y }) { /* ... */ }
+}
+```
+
+`BodyAdapter` and `SCPBody` are the same class with two names. Anything you can do in scp-protocol you can do here.
+
+## Tools are method calls, not HTTP
+
+When the brain returns `{ target_body: "arm", tool: "move", parameters: { x: 1, y: 2 } }`, Plexa looks up the body, calls `body.invokeTool("move", { x: 1, y: 2 })`, which calls `arm.move({ x: 1, y: 2 })`. Direct async method call. No serialization. No HTTP.
+
+The only HTTP in the picture is brain to LLM and (optionally) Plexa to a remote body.
+
+## Inprocess vs network bodies
+
+By default a body is in-process. To run it in another process, declare transport on the class:
+
+```javascript
+class MuJoCoCart extends BodyAdapter {
+  static bodyName = "cart"
+  static transport = "http"
+  static port = 8002
+}
+```
+
+Plexa auto-wraps it in a `NetworkBodyAdapter` that polls `/state` and `/events`, POSTs `/tool`, and (if `static tools` is empty) calls `/discover` to fetch the schema.
+
+```javascript
+space.addBody(new MuJoCoCart())
+await space.ready()   // waits for /discover if needed
+```
+
+The remote body just needs to expose those four endpoints. The Python adapter in the SCP repo does this.
+
+## The four jobs
+
+Plexa does four things and refuses to do anything else.
+
+| Job | Where | What |
+|-----|-------|------|
+| Translate | `translator.js` | Validate brain intent against the body's tool schema. |
+| Sequence | `space.js` | Order tick, brain, and dispatch each frame. |
+| Aggregate | `aggregator.js` | Pack every body's state into a token-budgeted prompt. |
+| Gate | `space.js` | Safety rule, then approval hook, then dispatch. |
+
+It does not plan. It does not reason. It does not own physics.
+
+## Decision authority
+
+```
+LLM brain decides:           WHAT (which tool, what parameters)
+Plexa decides:               WHEN and HOW (ordering, gating, dispatch)
+Body decides:                WHETHER (reflex veto, hardware limits)
+```
+
+These three layers do not overlap. The brain proposes. Plexa gates. The body has the last word; if a reflex says no, the body refuses.

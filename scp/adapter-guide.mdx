@@ -1,0 +1,153 @@
+---
+title: Adapter guide
+sidebarTitle: Adapter guide
+description: Three files to wire any body into SCP.
+---
+
+# Adapter guide
+
+An SCP adapter is three files. Nothing else is required.
+
+```
+adapters/your-body/
+  embodiment.json    describe the body
+  muscle.js          physics + sensors + tools
+  system-prompt.md   tell the brain what entities mean
+```
+
+## embodiment.json
+
+A static manifest the brain reads once. Plain JSON, no schema validation needed.
+
+```json
+{
+  "name": "cartpole",
+  "version": "1.0.0",
+  "actuators": [
+    { "name": "force", "type": "continuous", "range": [-15, 15], "unit": "newton" }
+  ],
+  "sensors": [
+    { "name": "pole_angle", "type": "scalar", "range": [-1.5, 1.5], "unit": "rad" },
+    { "name": "cart_pos",   "type": "scalar", "range": [-2.5, 2.5], "unit": "meter" }
+  ],
+  "constraints": [
+    "pole must stay within +/- 0.7 rad",
+    "cart must stay within +/- 2 m"
+  ]
+}
+```
+
+Keep it short. The brain prompt only needs enough to reason about constraints.
+
+## muscle.js
+
+A subclass of `SCPBody` with one async method per tool. Tools are declared in `static tools`.
+
+```javascript
+const { SCPBody, PatternStore } = require("scp-protocol")
+
+class CartpoleBody extends SCPBody {
+  static bodyName = "cartpole"
+
+  static tools = {
+    apply_force: {
+      description: "push the cart to balance the pole",
+      parameters: {
+        direction: { type: "string", enum: ["left", "right"], required: true },
+        magnitude: { type: "number", min: 0, max: 1, required: true },
+      },
+    },
+    reset: { description: "recenter the cart and pick a small tilt", parameters: {} },
+    hold:  { description: "apply no force this frame", parameters: {} },
+  }
+
+  constructor(opts = {}) {
+    super({
+      ...opts,
+      patternStore: new PatternStore({
+        featureExtractor: (e) => ({
+          tilt_bucket: Math.abs(e.pole_angle) > 0.4 ? "tilted" : "upright",
+          drift: e.cart_pos > 0.5 ? "right" : e.cart_pos < -0.5 ? "left" : "center",
+        }),
+      }),
+    })
+    this.physics = new CartpolePhysics()
+  }
+
+  // -- Tools (one async method per static tool name) --
+
+  async apply_force({ direction, magnitude }) {
+    this.physics.apply(direction, magnitude)
+    return { applied: direction, magnitude }
+  }
+  async reset() { this.physics.reset(); return { ok: true } }
+  async hold()  { this.physics.force = 0; return { ok: true } }
+
+  // -- Sensor loop (called by Plexa or by your own runner) --
+
+  async tick() {
+    await super.tick()
+    this.physics.step()
+    this.setState({
+      pole_angle: this.physics.theta,
+      cart_pos: this.physics.x,
+    })
+
+    // Reflex: emergency damping if the pole is past the danger threshold.
+    if (Math.abs(this.physics.theta) > 0.5) {
+      this.physics.apply(this.physics.theta > 0 ? "left" : "right", 0.6)
+      this.emit("pole_critical", { angle: this.physics.theta }, "CRITICAL")
+    }
+  }
+
+  // -- Outcome reporting (optional but recommended) --
+
+  evaluateOutcome(state) {
+    if (Math.abs(state.pole_angle) > 0.6) return false
+    if (Math.abs(state.pole_angle) < 0.1) return true
+    return null   // unknown, skip
+  }
+}
+
+module.exports = { CartpoleBody }
+```
+
+A few rules:
+
+- Static `tools` is the brain's contract. The names must match the async method names exactly.
+- `tick()` runs every frame. Keep it cheap.
+- `setState(patch)` updates the data the aggregator sends to the brain.
+- `emit(type, payload, priority)` queues an event. Priorities are `CRITICAL`, `HIGH`, `NORMAL`, `LOW`.
+- `evaluateOutcome(state)` is optional. Return `true`, `false`, or `null` (skip). When you return a boolean, the body auto-reports to the pattern store and adaptive memory.
+
+## system-prompt.md
+
+Plain prose telling the brain what your tools mean and when to use which.
+
+```markdown
+You control a cart-pole. Your job is to keep the pole upright and the cart near the center.
+
+Tools:
+- apply_force(direction, magnitude): push the cart left or right with a force in [0, 1].
+- reset(): only if the pole has fallen over and you want to start over.
+- hold(): apply no force this frame.
+
+Rules:
+- Push opposite to the tilt direction.
+- Magnitude scales with how far off-balance the pole is.
+- If the pole_critical event has fired in the last second, the body has already self-corrected; prefer hold().
+```
+
+The brain sees this as the system prompt, plus the live world state from the aggregator.
+
+## Common mistakes
+
+**Forgetting to declare a tool in `static tools`.** A method named `apply_force` will not be callable unless `static tools.apply_force` is also declared. The brain only sees what is in `static tools`.
+
+**Heavy work inside `tick()`.** A 60Hz loop has a 16 ms budget. Move physics to a worker if it gets close.
+
+**Not calling `super.tick()`.** Stats and counters live in the base class.
+
+**Treating the pattern store as global.** Each body owns its own. Cross-body memory belongs in Plexa's `VerticalMemory`.
+
+**Returning structured objects from a tool that the brain has to parse.** Tools return values for your own logging. The brain only sees the world state on the next tick.

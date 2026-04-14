@@ -1,0 +1,103 @@
+---
+title: How it works
+sidebarTitle: How it works
+description: The three layers, the ganglion pattern, and why the brain goes quiet.
+---
+
+# How it works
+
+SCP splits control into layers with very different latency budgets. Each layer answers what it can and forwards everything else.
+
+```
+Reflex              0 to 5 ms        in-body, hard rules
+PatternStore        0.1 ms           exact / very-similar match
+AdaptiveMemory      1 to 5 ms        similarity-scored generalizer
+LLM brain           500 ms or more   only the new stuff
+```
+
+The faster a layer, the more of the work it does. The brain is the last resort, not the default.
+
+## Reflex
+
+Reflexes are sync rules inside the body class. They fire before any cache lookup. Use them for things that must never block on a network call.
+
+```javascript
+class Patrol extends SCPBody {
+  async tick() {
+    await super.tick()
+    const distance = readSonar()
+
+    // Reflex: stop if anything is too close, no matter what the brain thinks.
+    if (distance < 0.2) {
+      this.physics.stop()
+      this.emit("emergency_stop", { distance }, "CRITICAL")
+      return
+    }
+  }
+}
+```
+
+Reflexes are part of your subclass. There is no framework hook to register them; that keeps the latency at zero.
+
+## Muscle (PatternStore)
+
+The pattern store is a feature-keyed cache. It hashes the feature vector you build, looks for an exact match, and falls back to k-nearest similarity over numeric and string fields.
+
+```javascript
+const store = new PatternStore({
+  featureExtractor: (entity) => ({
+    kind: entity.kind,
+    speed_bucket: entity.speed > 5 ? "fast" : "slow",
+  }),
+  explorationRate: 0.1,    // 10% of cache hits get re-checked by the brain
+  failureThreshold: 3,     // auto-invalidate after 3 consecutive bad outcomes
+})
+
+const hit = store.lookup(entity)
+if (hit) execute(hit.decision)
+```
+
+`lookup` returns `{ decision, confidence, source }` or `null`. `source` is `"exact"` or `"similar"`.
+
+When you observe an outcome, report it back so the cache can self-correct:
+
+```javascript
+store.report(entity, success)   // true or false
+```
+
+After `failureThreshold` consecutive failures the entry is purged and the brain is consulted fresh.
+
+## Brain (LLM)
+
+The brain is whichever bridge you wired in. It runs only when the lower layers had nothing.
+
+```javascript
+const decision = await brain.call(entity)
+body.learnFromBrain(entity, decision)   // writes to pattern + adaptive
+execute(decision)
+```
+
+`learnFromBrain` writes through to both the pattern store (for exact replay) and the adaptive memory (for generalization). The next similar situation is answered locally.
+
+## The ganglion pattern
+
+A ganglion is a cluster of nerve cells outside the brain. In SCP, every body is a ganglion: a small, fast decision unit that handles routine work without consulting the central brain.
+
+```
+                          Brain
+                            ^
+                            | (only novel situations)
+                            |
+   +-----------+      +-----------+      +-----------+
+   |  body 1   |      |  body 2   |      |  body 3   |
+   |  ganglion |      |  ganglion |      |  ganglion |
+   +-----------+      +-----------+      +-----------+
+```
+
+Each ganglion runs its own tick loop, owns its own pattern store, and only escalates the unfamiliar.
+
+## Octopus analogy
+
+An octopus has nine brains. One central, eight in the arms. Most of the time the arm decides what to grab without asking the central brain anything. The central brain sets goals and intervenes when the arm has no answer.
+
+That is the same shape as SCP. Body decides routine things locally. Brain handles the unfamiliar.

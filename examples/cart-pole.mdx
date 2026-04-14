@@ -1,0 +1,192 @@
+---
+title: Cart pole
+sidebarTitle: Cart pole
+description: Install to a balanced inverted pendulum in under 10 minutes.
+---
+
+# Cart pole
+
+This walkthrough builds a working balancer with one body, one brain, and persistence. It works without an LLM (stub brain fallback) and with one (Ollama on localhost).
+
+## Prerequisites
+
+- Node 18 or higher.
+- Optional: [Ollama](https://ollama.ai) with `llama3.2` pulled, for a real brain. Without it the demo uses a rotating stub brain.
+
+## Install
+
+```bash
+npm install @srk0102/plexa
+```
+
+## The whole file
+
+`cartpole.js`:
+
+```javascript
+const { Space, BodyAdapter, Brain } = require("@srk0102/plexa")
+const { OllamaBrain } = require("@srk0102/plexa/bridges/ollama")
+
+// -- Pure JS cart-pole physics --
+
+class CartpolePhysics {
+  constructor() { this.reset() }
+  reset() { this.x = 0; this.v = 0; this.theta = (Math.random() - 0.5) * 0.1; this.omega = 0; this.force = 0 }
+  step(dt = 1 / 60) {
+    const g = 9.8, mC = 1.0, mP = 0.1, L = 0.5
+    const total = mC + mP
+    const sinT = Math.sin(this.theta), cosT = Math.cos(this.theta)
+    const temp = (this.force + mP * L * this.omega * this.omega * sinT) / total
+    const alpha = (g * sinT - cosT * temp) / (L * (4 / 3 - (mP * cosT * cosT) / total))
+    const accX = temp - (mP * L * alpha * cosT) / total
+    this.v += accX * dt; this.x += this.v * dt
+    this.omega += alpha * dt; this.theta += this.omega * dt
+    this.v *= 0.999; this.omega *= 0.999; this.force = 0
+    if (Math.abs(this.theta) > 1.2 || Math.abs(this.x) > 2.5) { this.reset(); return true }
+    return false
+  }
+  apply(direction, magnitude = 0.5) {
+    const f = Math.min(1, Math.max(0, magnitude)) * 15
+    this.force = direction === "left" ? -f : f
+  }
+}
+
+// -- Body --
+
+class CartpoleBody extends BodyAdapter {
+  static bodyName = "cartpole"
+  static tools = {
+    apply_force: {
+      description: "push the cart left or right",
+      parameters: {
+        direction: { type: "string", enum: ["left", "right"], required: true },
+        magnitude: { type: "number", min: 0, max: 1, required: true },
+      },
+    },
+    hold: { description: "no-op", parameters: {} },
+  }
+
+  constructor() { super(); this.physics = new CartpolePhysics() }
+
+  async apply_force({ direction, magnitude }) {
+    this.physics.apply(direction, magnitude); return { applied: direction, magnitude }
+  }
+  async hold() { this.physics.force = 0; return { ok: true } }
+
+  async tick() {
+    await super.tick()
+    this.physics.step()
+    this.setState({ pole_angle: this.physics.theta, cart_pos: this.physics.x })
+
+    // Reflex: emergency damping when the pole is past the danger threshold.
+    if (Math.abs(this.physics.theta) > 0.5) {
+      this.physics.apply(this.physics.theta > 0 ? "left" : "right", 0.6)
+    }
+    if (Math.abs(this.physics.theta) > 0.8) {
+      this.emit("pole_critical", { angle: this.physics.theta }, "CRITICAL")
+    }
+  }
+}
+
+// -- Stub brain (used if Ollama is not running) --
+
+class StubBrain extends Brain {
+  constructor() { super({ model: "stub" }); this._i = 0 }
+  async _rawCall() {
+    this._i++
+    const choices = [
+      { tool: "apply_force", parameters: { direction: "left",  magnitude: 0.5 } },
+      { tool: "apply_force", parameters: { direction: "right", magnitude: 0.5 } },
+      { tool: "hold", parameters: {} },
+    ]
+    const c = choices[this._i % choices.length]
+    return JSON.stringify({ target_body: "cartpole", tool: c.tool, parameters: c.parameters })
+  }
+}
+
+// -- Main --
+
+async function main() {
+  const space = new Space("cartpole_demo", { tickHz: 60, brainIntervalMs: 1500 })
+  space.addBody(new CartpoleBody())
+
+  const ollamaUp = await OllamaBrain.isAvailable()
+  space.setBrain(ollamaUp ? new OllamaBrain({ model: "llama3.2", maxTokens: 80 }) : new StubBrain())
+  space.setGoal("balance the pole upright")
+
+  space.on("tool_dispatched", (e) =>
+    console.log(`[plexa] ${e.body}.${e.tool}(${JSON.stringify(e.parameters)})`)
+  )
+  space.installShutdownHandlers()
+  await space.run()
+  console.log(`[plexa] running at ${space.tickHz}Hz, brain=${ollamaUp ? "ollama" : "stub"}`)
+}
+main()
+```
+
+## Run
+
+```bash
+node cartpole.js
+```
+
+## Real output
+
+Six seconds of a session against `llama3.2` running locally:
+
+```
+[plexa] running at 60Hz, brain=ollama
+[plexa] cartpole.apply_force({"direction":"right","magnitude":0.5})
+[plexa] cartpole.apply_force({"direction":"left","magnitude":0.4})
+[plexa] cartpole.hold({})
+[plexa] cartpole.apply_force({"direction":"right","magnitude":0.3})
+[plexa] cartpole.apply_force({"direction":"left","magnitude":0.4})
+^C
+[plexa] memory saved (4 decisions)
+```
+
+The brain calls happen at 1.5 second intervals (`brainIntervalMs`). The 60Hz physics tick keeps the pole alive between calls because of the reflex, which is why the brain only needs to nudge.
+
+## Watching brain calls drop
+
+Add a stats line. The first session shows the brain busy. After a few sessions on the same goal, vertical memory takes over and the brain barely runs.
+
+```javascript
+setInterval(() => {
+  const s = space.getStats()
+  console.log(`tick=${s.tick} brain=${s.brain.calls} memHits=${s.memoryHits} cost=$${s.estimatedCostUSD}`)
+}, 3000)
+```
+
+Run twice with a vertical memory attached:
+
+```javascript
+const { VerticalMemory } = require("@srk0102/plexa")
+const space = new Space("cartpole_demo", {
+  verticalMemory: new VerticalMemory({ spaceName: "cartpole_demo", dbPath: "./plexa.db" }),
+})
+```
+
+Session 1 (cold cache):
+
+```
+tick=180 brain=2 memHits=0 cost=$0.000020
+tick=360 brain=4 memHits=0 cost=$0.000041
+tick=540 brain=6 memHits=0 cost=$0.000061
+```
+
+Session 2 (memory loaded from disk):
+
+```
+tick=180 brain=0 memHits=2 cost=$0.000000
+tick=360 brain=0 memHits=4 cost=$0.000000
+tick=540 brain=1 memHits=5 cost=$0.000010
+```
+
+The brain is silent. Plexa is serving from `VerticalMemory`.
+
+## What does not work yet
+
+- The cart-pole here uses simplified physics. For real MuJoCo physics, see `adapters/mujoco-cartpole/muscle.py` in the SCP repo (Python, network body).
+- Ollama's first call is slow. In production demos, pre-warm with a small dummy invocation before starting the timer.
+- The bundled `inprocess-demo` example in the Plexa repo prints fancier stats. The walkthrough above is the same shape, just shorter.

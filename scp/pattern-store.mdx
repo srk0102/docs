@@ -1,0 +1,156 @@
+---
+title: Pattern store and adaptive memory
+sidebarTitle: Memory layers
+description: How brain decisions become local muscle memory.
+---
+
+# Pattern store and adaptive memory
+
+Two cache layers sit between the body and the LLM. The pattern store handles exact and very-similar situations. Adaptive memory handles "this looks like one we have seen before" situations.
+
+## PatternStore
+
+A feature-keyed cache. You give it a function that turns an entity into a small object of strings, numbers, and booleans.
+
+```javascript
+const { PatternStore } = require("scp-protocol")
+
+const store = new PatternStore({
+  featureExtractor: (entity) => ({
+    kind: entity.kind,
+    distance_bucket: entity.distance < 5 ? "near" : "far",
+  }),
+})
+```
+
+### Exact match
+
+`lookup` first hashes the feature vector and looks for that exact hash.
+
+```javascript
+store.learn({ kind: "drone", distance: 3 }, "engage")
+store.lookup({ kind: "drone", distance: 4 })
+// { decision: "engage", confidence: 0.05, source: "exact" }
+```
+
+The hash is order-independent. Same features, same hash.
+
+### Similarity match
+
+If the exact hash misses, `lookup` walks every other pattern and scores numeric distance plus string equality.
+
+```javascript
+store.lookup({ kind: "drone", distance: 50 })
+// returns the closest pattern only if similarity > 0.8 AND its confidence > threshold
+```
+
+The default similarity threshold is 0.8. Patterns below the confidence threshold are skipped.
+
+### Confidence
+
+Confidence is a simple count: how many times the same decision has been seen for this exact feature vector. It saturates at 20.
+
+```javascript
+for (let i = 0; i < 10; i++) store.learn({ kind: "ally" }, "wave")
+store.lookup({ kind: "ally" })
+// confidence: 0.5  (10 of 20)
+```
+
+Confidence below `confidenceThreshold` (default 0.6) is treated as "not yet trusted" and forces a brain call.
+
+### Exploration rate
+
+Even confident hits get re-checked every now and then so the cache does not drift.
+
+```javascript
+new PatternStore({ explorationRate: 0.1 })   // 10% of hits return null
+```
+
+`explorationRate: 0` makes the cache deterministic. Useful in tests.
+
+### Success rate monitoring
+
+After every cached decision, report what happened.
+
+```javascript
+const hit = store.lookup(entity)
+if (hit) {
+  await execute(hit.decision)
+  store.report(entity, observed_success)   // true or false
+}
+```
+
+The store tracks consecutive failures per pattern. After `failureThreshold` (default 3) the entry is purged and the store emits `pattern_invalidated`.
+
+```javascript
+store.on("pattern_invalidated", (info) => {
+  console.log("dropped pattern", info.features)
+})
+```
+
+`store.stats()` returns hit rate, average success rate, low-confidence count, and totals.
+
+## AdaptiveMemory
+
+Adaptive memory is a similarity-scored decision store that generalizes from past LLM decisions when the pattern store cannot.
+
+```javascript
+const { AdaptiveMemory } = require("scp-protocol")
+
+const mem = new AdaptiveMemory({
+  threshold: 0.8,           // minimum similarity to count as a hit
+  k: 5,                     // top-k neighbors used for confidence blending
+  maxHistory: 500,
+  weights: { kind: 5, distance: 1 },   // optional per-feature weights
+})
+
+mem.store({ kind: "enemy", distance: 4 }, "halt")
+mem.lookup({ kind: "enemy", distance: 4.2 })
+// { decision: "halt", confidence: 0.78 }
+```
+
+### Scoring
+
+Distance is weighted euclidean over normalized feature space. The final confidence is `similarity * stored confidence * fraction of top-k that agree on the decision`. Disagreement among neighbors dilutes confidence.
+
+### Outcome reporting
+
+Same shape as `PatternStore`:
+
+```javascript
+mem.report(features, success)
+```
+
+Success bumps the entry's confidence. Failure decays it. After `failureThreshold` consecutive failures the entry is purged.
+
+### Persistence
+
+```javascript
+const mem = new AdaptiveMemory({ storage: "sqlite", storageKey: "scp_adaptive.db" })
+mem.save()    // writes the in-memory entries to SQLite
+mem.load()    // hydrates from disk on startup
+```
+
+`better-sqlite3` is an optional peer dep. If it is not installed, persistence calls return `0` and the store stays in memory.
+
+## Wiring both layers into a body
+
+`SCPBody.decideLocally` consults the pattern store first, then the adaptive memory.
+
+```javascript
+const body = new MyBody({
+  patternStore:   new PatternStore({ featureExtractor: f }),
+  adaptiveMemory: new AdaptiveMemory({ threshold: 0.8 }),
+})
+
+const local = body.decideLocally(entity)
+if (local) {
+  execute(local.decision)
+} else {
+  const fromBrain = await brain.call(entity)
+  body.learnFromBrain(entity, fromBrain)   // writes to both layers
+  execute(fromBrain)
+}
+```
+
+`learnFromBrain` is the only call that needs to know about both stores. The decision flow takes care of the rest.
