@@ -12,6 +12,17 @@ SCP connects any LLM to any body -- physical or virtual -- without retraining.
 
 The body runs at 60fps. The brain sleeps until needed. The muscle handles 99%. The brain handles 1%.
 
+## SCP vs Plexa
+
+| | scp-protocol | plexa |
+|---|---|---|
+| **Scope** | one body | many bodies under one brain |
+| **Role** | protocol + SDK | orchestration framework |
+| **Analogy** | LangChain for bodies | LangGraph for bodies |
+| **npm** | `scp-protocol` | `@srk0102/plexa` |
+
+Use SCP when you have one embodied agent. Use [Plexa](https://github.com/srk0102/plexa) when you have several and want one LLM coordinating all of them. Plexa is built on SCP.
+
 ## The three layers
 
 SCP splits intelligence by speed, the same way biological nervous systems work.
