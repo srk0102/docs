@@ -105,7 +105,7 @@ Sample run on a Plexa stub workload, 100 brain decisions during ramp-up:
 | 3       | 8         | 92                  | $0.0004                 |
 | 4       | 1         | 99                  | $0.0001                 |
 
-Numbers vary by task. The shape is the same: the brain quiets down, the cost drops, the latency stops bottlenecking on the LLM.
+Numbers vary by task. The shape is the same: brain decisions get cached locally, repeated situations skip the LLM, latency stops bottlenecking on the brain. Novel situations always wake the brain. Cost is proportional to novelty.
 
 ## Persistence
 

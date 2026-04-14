@@ -96,6 +96,44 @@ A ganglion is a cluster of nerve cells outside the brain. In SCP, every body is 
 
 Each ganglion runs its own tick loop, owns its own pattern store, and only escalates the unfamiliar.
 
+## When does the brain wake?
+
+This is the question every reviewer asks first. The answer is not magic. It is a configurable confidence gate.
+
+The body wakes the brain when:
+
+- The pattern store has no confident match (confidence below `confidenceThreshold`, default `0.6`).
+- Adaptive memory has no similar match (similarity below `threshold`, default `0.8`).
+- A reflex fires an emergency event with priority `CRITICAL`.
+- The developer explicitly calls `this.emit("stuck", state)` or any other event the orchestrator routes to the brain.
+
+The body stays silent when:
+
+- The pattern store has an exact-hash match above the confidence threshold.
+- Adaptive memory finds a similar past situation that scores above its threshold.
+- A reflex handles the situation locally and no event is emitted.
+
+The risk is just two knobs:
+
+- If `confidenceThreshold` is too high, the brain is called too often and cost stays high.
+- If it is too low, the body executes stale decisions in genuinely novel situations.
+
+Defaults are conservative (high confidence required). Tune them per use case. The system is exactly as smart as the threshold you set.
+
+```javascript
+const store = new PatternStore({
+  featureExtractor: (e) => ({ kind: e.kind }),
+  confidenceThreshold: 0.6,    // only act on cached decisions seen >= 12 of 20 times
+  explorationRate: 0.1,        // 10% of confident hits get re-checked by the brain
+})
+
+const adaptive = new AdaptiveMemory({
+  threshold: 0.8,              // similarity must be >= 0.8 to qualify as a hit
+})
+```
+
+`explorationRate` is the safety valve against drift: even confident cache hits are occasionally returned as misses so the brain can re-validate. Set to `0` for fully deterministic behavior.
+
 ## Octopus analogy
 
 An octopus has nine brains. One central, eight in the arms. Most of the time the arm decides what to grab without asking the central brain anything. The central brain sets goals and intervenes when the arm has no answer.

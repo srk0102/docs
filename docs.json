@@ -60,7 +60,8 @@
             "group": "Walkthroughs",
             "pages": [
               "examples/cart-pole",
-              "examples/two-bodies"
+              "examples/two-bodies",
+              "examples/web-backend"
             ]
           }
         ]

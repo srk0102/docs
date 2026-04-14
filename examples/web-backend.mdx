@@ -1,0 +1,144 @@
+---
+title: Web backend
+sidebarTitle: Web backend
+description: Use SCP with a web server. Same protocol as robotics. Different body, same brain.
+---
+
+# Using SCP with a web backend
+
+A web server is a continuously running system that pushes events. That is exactly the shape SCP expects. The server runs in a loop, emits anomalies, and the LLM advises only on novel situations. Brain decisions are then cached locally for repeated patterns.
+
+This page shows a minimal Express server wired as an SCP body with three tools: scale up, rate limit, alert team.
+
+## Why this works
+
+The protocol does not care what the body is. The pattern store does not know whether it is caching a robot's tool call or an autoscaler's. Same protocol. Same caching behavior. Different body. Different brain prompt.
+
+Same cost shape too: the brain is asked the first few times an unusual traffic pattern appears, then the cached decision serves repeated patterns without an LLM call. Cost is proportional to novelty.
+
+## The body
+
+```javascript
+const { BodyAdapter } = require("@srk0102/plexa")
+
+class WebServerBody extends BodyAdapter {
+  static bodyName = "web_server"
+  static tools = {
+    scale_up: {
+      description: "Increase server capacity",
+      parameters: {
+        factor: { type: "number", min: 1, max: 10, required: true },
+      },
+    },
+    rate_limit: {
+      description: "Enable rate limiting",
+      parameters: {
+        requestsPerMinute: { type: "number", min: 1, required: true },
+      },
+    },
+    alert_team: {
+      description: "Send alert to on-call team",
+      parameters: {
+        severity: { type: "string", enum: ["low", "high", "critical"], required: true },
+      },
+    },
+  }
+
+  constructor(server, pagerduty) {
+    super()
+    this.server = server
+    this.pagerduty = pagerduty
+  }
+
+  async tick() {
+    await super.tick()
+    const metrics = await this.server.getMetrics()
+    this.setState({
+      rps: metrics.requestsPerSecond,
+      p99: metrics.p99Latency,
+      errorRate: metrics.errorRate,
+    })
+
+    if (metrics.errorRate > 0.05) {
+      this.emit("error_spike", metrics, "CRITICAL")
+    }
+    if (metrics.p99Latency > 2000) {
+      this.emit("slow_request", metrics, "HIGH")
+    }
+    if (metrics.requestsPerSecond > metrics.baselineRps * 3) {
+      this.emit("unusual_traffic", metrics, "HIGH")
+    }
+  }
+
+  async scale_up({ factor }) {
+    await this.server.scale(factor)
+    return { scaled: factor }
+  }
+
+  async rate_limit({ requestsPerMinute }) {
+    await this.server.setRateLimit(requestsPerMinute)
+    return { limited: requestsPerMinute }
+  }
+
+  async alert_team({ severity }) {
+    await this.pagerduty.alert({ severity, source: "web_server" })
+    return { alerted: severity }
+  }
+}
+
+module.exports = { WebServerBody }
+```
+
+`tick()` polls the server's own metrics endpoint, sets state for the aggregator, and emits priority-tagged events. The LLM only sees the events; it never touches Express directly.
+
+## The space
+
+```javascript
+const { Space } = require("@srk0102/plexa")
+const { OllamaBrain } = require("@srk0102/plexa/bridges/ollama")
+const { WebServerBody } = require("./web-server-body")
+
+const space = new Space("web_ops", { tickHz: 1, brainIntervalMs: 5000 })
+space.addBody(new WebServerBody(server, pagerduty))
+space.setBrain(new OllamaBrain({ model: "llama3.2" }))
+space.setGoal("keep p99 below 2 seconds and error rate below 5%")
+
+// Hard guard: never accept a scale-down dressed up as scale-up with factor < 1.
+space.addSafetyRule((cmd) =>
+  cmd.tool === "scale_up" && cmd.parameters.factor < 1
+    ? { allowed: false, reason: "negative scale" }
+    : { allowed: true }
+)
+
+// Human-in-the-loop on critical alerts.
+space.addApprovalHook(async (cmd) => {
+  if (cmd.tool === "alert_team" && cmd.parameters.severity === "critical") {
+    return await waitForOncallApproval(cmd)   // your function
+  }
+  return true
+})
+
+space.installShutdownHandlers()
+await space.run()
+```
+
+A 1Hz tick is plenty for a web server. `brainIntervalMs: 5000` caps the LLM at one call per five seconds. The safety rule and approval hook are the gates between the brain and your production.
+
+## What you observe
+
+First few hours: the brain is asked when it sees an error spike for the first time. It picks `scale_up` or `rate_limit`. The pattern store records the decision against the feature vector (error rate bucket, p99 bucket, traffic shape).
+
+Days later: the same kind of spike happens. The body looks the situation up locally, finds a confident match, dispatches `scale_up` itself in microseconds. The brain is not called.
+
+If the situation changes (new traffic shape the cache has never seen), confidence drops, the brain wakes, the cycle repeats.
+
+## What does not work yet
+
+- **No metrics integration.** This page assumes you have a `getMetrics()` you can call. Wiring it to Prometheus, OpenTelemetry, or Datadog is your job.
+- **No human-approval UI.** `waitForOncallApproval` is a placeholder. You write it.
+- **No simulator.** There is no fake-traffic generator bundled with the example. The code above runs against a real server only.
+- **No multi-region coordination.** Plexa is single-process today. If you have several regions, each runs its own Space; they do not share state.
+
+## A note on scope
+
+This is not a replacement for proper monitoring tools like Datadog, PagerDuty, or your existing autoscaler. It is a way to add LLM reasoning as one more layer in a system that already emits events. The brain's job is to make a judgement call when your existing rule-based system runs out of rules. After it does that a few times, the pattern store handles the repeat cases at zero cost.
